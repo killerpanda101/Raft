@@ -1,6 +1,9 @@
 import json
+import threading
 
 class KeyValueStore:
+    client_lock = threading.Lock()
+
     def __init__(self):
         self.data = {}
 
@@ -20,17 +23,18 @@ class KeyValueStore:
 
         response = "Sorry, I don't understand that command :-("
 
-        if operation[command] == "get":
-            response = self.get(operation[key])
-        elif operation[command] == "set":
-            self.set(operation[key], operation[value])
-            response = f"key {operation[key]} set to {operation[value]}"
-        elif(operation[command] == "delete"):
-            self.delete(operation[key])
-            response = f"Key operation[key] was deleted!"
-        elif(operation[command] == "show"):
-            response = str(self.keyValueStore)
-        else:
-            pass
+        with self.client_lock:
+            if operation[command] == "get":
+                response = self.get(operation[key])
+            elif operation[command] == "set":
+                self.set(operation[key], operation[value])
+                response = f"key {operation[key]} set to {operation[value]}"
+            elif(operation[command] == "delete"):
+                self.delete(operation[key])
+                response = f"Key operation[key] was deleted!"
+            elif(operation[command] == "show"):
+                response = str(self.keyValueStore)
+            else:
+                pass
 
         return response

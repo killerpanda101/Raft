@@ -1,4 +1,5 @@
 import socket
+import threading
 import sendRecv as utils
 from key_value_store import KeyValueStore
 
@@ -22,7 +23,22 @@ def catch_up(key_value_store):
     for command in log.split('\n'):
         key_value_store.execute(command)
 
+def handle_client(connection, kvs):
+    
+    # read data from socket
+    data = utils.Recv(connection)
+    print(f"Recieved operation {data}")
 
+    # write operation to file
+    f = open("commands.txt", "a")
+    f.write(data + '\n')
+    f.close()
+                
+    # execute operation and send response
+    res = kvs.execute(data)
+    utils.Send(connection, res)
+                        
+    
 def main():
     kvs = KeyValueStore()
     catch_up(kvs)
@@ -30,27 +46,15 @@ def main():
     
     while True:
         try:
-            print('waiting for a connection')
-            # accept new connection
+            # accept new connection and spawn thread
             connection, client_address = sock.accept()
             print(f"connection from {client_address}")
-
-            # read data from socket
-            data = utils.Recv(connection)
-            print(f"Recieved operation {data}")
-
-            # write operation to file
-            f = open("commands.txt", "a")
-            f.write(data + '\n')
-            f.close()
-                
-            # execute operation and send response
-            res = kvs.execute(data)
-            utils.Send(connection, res)
-                        
+            threading.Thread(target=handle_client, args=(connection, kvs)).start()
+        
         except:
+            # close an exit if errors
             if(connection):
                 connection.close()
             break
-
+        
 main()
