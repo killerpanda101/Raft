@@ -8,7 +8,8 @@ def Send(conn, msg):
     msg = f"{len(msg):<{HEADERSIZE}}"+msg
     conn.sendall(msg.encode('utf-8'))
 
-# remove message header and 
+# TO-DO handel failures!
+# remove message header and send back response
 def Recv(conn):
 
     while True:

@@ -1,7 +1,6 @@
 import socket
 import sys
-import src.utils.sendRecv
-
+import sendRecv as utils
 
 # Create a TCP/IP socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -12,14 +11,13 @@ print(f"connecting to {server_address[0]} port {server_address[1]}")
 sock.connect(server_address)
 
 try:
-
     # Send data
     message = input("Type your message:\n")
     print(f"sending {message}")
-    Send(sock, message)
+    utils.Send(sock, message)
     
-    # Receive data
-    res = Recv(sock)
+    # Receive response
+    res = utils.Recv(sock)
     print(f'recieved: {res}')
     
 finally:
