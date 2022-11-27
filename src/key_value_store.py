@@ -1,11 +1,14 @@
-import json
+import time
+import os
 import threading
 
 class KeyValueStore:
     client_lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self, server_name):
+        self.server_name = server_name
         self.data = {}
+        self.log = []
 
     def get(self, key):
         return self.data[key]
@@ -17,8 +20,13 @@ class KeyValueStore:
         del self.data[key]
 
     def execute(self, operationStr):
-        command, key, value = 0,1,2 # Nice trick!
+        # write command to file and append to log!
+        self.log.append(operationStr)
+        f = open(self.server_name + "_log.txt", "a+")
+        f.write(operationStr + '\n')
+        f.close()
         
+        command, key, value = 0,1,2 # Nice trick!
         operation = operationStr.split(" ")
 
         response = "Sorry, I don't understand that command :-("
@@ -38,3 +46,15 @@ class KeyValueStore:
                 pass
 
         return response
+
+        
+    # bring the key value store upto spec!
+    def catch_up(self):
+        if os.path.exists(self.server_name + "_log.txt"):
+            f = open(self.server_name + "_log.txt", "r")
+            log = f.read()
+            f.close()
+
+            for command in log.split('\n'):
+                self.execute(command)
+        

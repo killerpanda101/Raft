@@ -1,60 +1,126 @@
-import socket
+from socket import *
 import threading
 import sendRecv as utils
 from key_value_store import KeyValueStore
+from config import server_nodes
+import ast
 
-# setting up a listening socket!
-def server_setup():
-    server_address = ('localhost', 10000)
-    print(f"starting up on {server_address[0]} port {server_address[1]}")
+class Server:
+    def __init__(self, name, port=10000):
+        self.port = port
+        self.name = name
+        self.kvs = KeyValueStore(server_name=self.name)
+        self.kvs.catch_up()
 
-    sock = socket.socket()
-    sock.bind(server_address)
-    sock.listen(1)
+    # Hi server say hi to your new friends!
+    def destination_addresses(self):
+        other_servers = {k: v for (k, v) in server_nodes().items() if k != self.name}
+        return list(other_servers.values())
 
-    return sock
+    def address_of(self, server_name):
+        return server_nodes()[server_name]
 
-# bring the key value store upto spec!
-def catch_up(key_value_store):
-    f = open("commands.txt", "r")
-    log = f.read()
-    f.close()
+    # Send messages to friend!
+    def tell(self, message, to_server_address):
+        print(f"connecting to {to_server_address[0]} port {to_server_address[1]}")
 
-    for command in log.split('\n'):
-        key_value_store.execute(command)
+        self.client_socket = socket(AF_INET, SOCK_STREAM)
+        self.client_socket.connect(to_server_address)
 
-def handle_client(connection, kvs):
+        try:
+            print(f"sending {message}")
+            utils.Send(self.client_socket, message.encode('utf-8'))
+        except:
+            print(f"closing socket")
+            self.client_socket.close()
+
+
+    # setting up a listening socket!
+    def start(self):
+        server_address = ('localhost', self.port)
+
+        f = open("server_registry.txt", "a")
+        f.write(self.name + " localhost " + str(self.port) + '\n')
+        f.close()
+
+        print("starting up on " + str(server_address[0]) + " port "  + str(server_address[1]))
+
+        self.server_socket = socket(AF_INET, SOCK_STREAM)
+        self.server_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+        self.server_socket.bind(server_address)
+        self.server_socket.listen(1)
+
+        while True:
+            try:
+                # accept new connection and spawn thread
+                connection, client_address = self.server_socket.accept()
+                print(f"connection from {client_address}")
+                threading.Thread(target=self.handle_client, args=(connection, self.kvs)).start()
+            
+            except:
+                # close an exit if errors
+                if(connection):
+                    connection.close()
+                break
+
     
-    # read data from socket
-    data = utils.Recv(connection)
-    print(f"Recieved operation {data}")
+    def handle_client(self, connection, kvs):
+        while True:
+            # read data from socket
+            raw_data = utils.Recv(connection)
+            server_id, data = self.return_address_and_message(raw_data)
+            
+            print(f"Recieved operation {data}")
+            
+            
+            res = ''
 
-    # write operation to file
-    f = open("commands.txt", "a")
-    f.write(data + '\n')
-    f.close()
-                
-    # execute operation and send response
-    res = kvs.execute(data)
-    utils.Send(connection, res)
+            # request log length
+            if(data == "log_length?"):
+                res = "log_length"+str(len(self.kvs.log))
+            
+            # leader sending catch-up info
+            elif data.split(" ")[0] == "log_length":
+                catchUpIdx = int(data.split(" ")[1])
+                if len(self.kvs.log) > catchUpIdx:
+                    res = "catch_up_log "+str(self.kvs.log[catchUpIdx:])
+                else:
+                    res = "Your info is as good as mine!"
+
+            # follower applying catch logs
+            elif data.split(" ")[0] == "catch_up_log":
+                logsToAppend = ast.literal_eval(data.split("catch_up_log ")[1])
+                [self.kvs.execute for log in logsToAppend]
+                res = "Caught up. Thanks!"
+
+            # show log (debugging!)
+            elif data == "show_log":
+                res = str(self.kvs.log)
+
+            # Establish yourself as the leader!
+            elif data == "youre_the_leader":
+                self.broadcast(self.with_return_address('log_length?'))
+            
+            # just execute operation
+            else:
+                res = kvs.execute(data)
+
+            # send response!
+            res = self.with_return_address(res)
+            utils.Send(connection, res)
+
+    def broadcast(self, message):
+        for other_server_address in self.destination_addresses():
+            self.tell(message, to_server_address=other_server_address)
+                    
+    def return_address_and_message(self, string_request):
+        address_with_message = string_request.split("@")
+        return address_with_message[0], "@".join(address_with_message[1:])
+
+    def with_return_address(self, response):
+        return self.name + "@" + response
                         
     
-def main():
-    kvs = KeyValueStore()
-    catch_up(kvs)
-    sock = server_setup()
+
     
-    while True:
-        try:
-            # accept new connection and spawn thread
-            connection, client_address = sock.accept()
-            print(f"connection from {client_address}")
-            threading.Thread(target=handle_client, args=(connection, kvs)).start()
-        
-        except:
-            # close an exit if errors
-            if(connection):
-                connection.close()
-            break
-        
-main()
+    
