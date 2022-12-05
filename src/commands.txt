@@ -1,6 +1,0 @@
-parijat rocks
-set parijat rocks
-set pritika rocks
-get parijat
-
-get parijat

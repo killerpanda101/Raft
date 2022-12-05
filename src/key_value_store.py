@@ -1,14 +1,19 @@
-import time
 import os
 import threading
+
+from src.log_data_access_object import LogDataAccessObject
+
 
 class KeyValueStore:
     client_lock = threading.Lock()
 
     def __init__(self, server_name):
         self.server_name = server_name
-        self.data = {}
+        self.data = {} # This is the state machine, not maintained for not leaders??
         self.log = []
+        self.catch_up_successful = False
+        self.latest_term = 0   # need to be updated (this is base case)
+        self.highest_index = 1
 
     def get(self, key):
         return self.data[key]
@@ -19,42 +24,171 @@ class KeyValueStore:
     def delete(self, key):
         del self.data[key]
 
-    def execute(self, operationStr):
-        # write command to file and append to log!
-        self.log.append(operationStr)
-        f = open(self.server_name + "_log.txt", "a+")
-        f.write(operationStr + '\n')
-        f.close()
-        
-        command, key, value = 0,1,2 # Nice trick!
-        operation = operationStr.split(" ")
+    # bring the key value store upto spec!
+    def catch_up(self, path_to_logs=''):
+        # why am i doing all this dude??
+        if path_to_logs == '':
+            path_to_logs = "logs/" + self.server_name + "_log.txt"
 
-        response = "Sorry, I don't understand that command :-("
+        if os.path.exists(path_to_logs):
+            f = open(path_to_logs, "r+")
+
+            # if log completely empty set base case
+            all_lines = f.read().splitlines()
+            non_empty_lines = list(filter(lambda x: x != '', all_lines))
+            if len(non_empty_lines) == 0:
+                f.seek(0)
+                f.write("0 0 set  unreachable\n")
+            f.close()
+
+            last_command = ''
+            for command in all_lines:
+                if command != '':
+                    last_command = command
+                    self.write_to_state_machine(command, term_absent=False)
+
+            if last_command != '':
+                components = last_command.split(' ')
+
+                # increment the index from the last call
+                # so that the next log entry continues the count upward
+                self.highest_index = int(components[0])
+                self.latest_term = int(components[1])
+
+        self.catch_up_successful = True
+
+    def remove_logs_after_index(self, index, path_to_logs=''):
+        if path_to_logs == '':
+            path_to_logs = "logs/" + self.server_name + "_log.txt"
+
+        if os.path.exists(path_to_logs):
+            f = open(path_to_logs, "r+")
+            log_list = f.readlines()
+
+            while '' in log_list:
+                log_list.remove('')
+            f.seek(0)
+            for line_to_keep in log_list[0:index + 1]:
+                f.write(line_to_keep)
+            f.truncate()
+            f.close()
+
+    def log_access_object(self, path_to_logs=''):
+        as_dict = {}
+        the_worst_array = []
+        if path_to_logs == '':
+            path_to_logs = "logs/" + self.server_name + "_log.txt"
+
+        if os.path.exists(path_to_logs):
+            f = open(path_to_logs, "r")
+            log = f.read()
+            f.close()
+
+            for command in log.split('\n'):
+                if command != '':
+                    operands = command.split(" ")
+
+                    as_dict[" ".join(operands[:2])] = " ".join(operands)
+                    the_worst_array.append(" ".join(operands[:2]))
+
+        return LogDataAccessObject(array=the_worst_array, dict=as_dict)
+
+    def command_at(self, previous_index, previous_term):
+        # get the command at "index term" combo.
+        return self.log_access_object().term_indexed_logs. \
+            get(str(previous_index) + " " + str(previous_term))
+
+    def get_latest_term(self):
+        if not self.catch_up_successful:
+            print("This store isn't caught up, so it doesn't know what term we're in!")
+            return
+
+        return self.latest_term
+
+    # client operations that modify state (SET/DELETE)
+    def write_to_state_machine(self, string_operation, term_absent, path_to_logs=''):
+        print("Writing to state machine: " + string_operation)
+
+        if len(string_operation) == 0:
+            return
+
+        if term_absent:
+            string_operation = str(self.highest_index) + " " + str(self.latest_term) + " " + string_operation
+
+        operands = string_operation.split(" ")
+        index, term, command, key, values = 0, 1, 2, 3, 4
+
+        response = "Sorry, I don't understand that command."
 
         with self.client_lock:
-            if operation[command] == "get":
-                response = self.get(operation[key])
-            elif operation[command] == "set":
-                self.set(operation[key], operation[value])
-                response = f"key {operation[key]} set to {operation[value]}"
-            elif(operation[command] == "delete"):
-                self.delete(operation[key])
-                response = f"Key operation[key] was deleted!"
-            elif(operation[command] == "show"):
-                response = str(self.keyValueStore)
+            self.latest_term = int(operands[term])
+
+            if operands[command] == "set":
+                value = " ".join(operands[values:])
+
+                self.log.append(string_operation)
+                self.set(operands[key], value)
+                response = f"key {operands[key]} set to {value}"
+            elif operands[command] == "delete":
+                self.log.append(string_operation)
+                self.delete(operands[key])
+                response = f"key {key} deleted"
             else:
                 pass
 
         return response
 
-        
-    # bring the key value store upto spec!
-    def catch_up(self):
-        if os.path.exists(self.server_name + "_log.txt"):
-            f = open(self.server_name + "_log.txt", "r")
-            log = f.read()
+    #  client operations that do not modify state (GET/SHOW)
+    def read(self, string_operation):
+        print(string_operation)
+
+        if len(string_operation) == 0:
+            return
+
+        operands = string_operation.split(" ")
+        print("the read command is " + string_operation)
+        command, key, values = 0, 1, 2
+
+        response = "Sorry, I don't understand that command."
+
+        # this is the client reads
+        with self.client_lock:
+            if operands[command] == "get":
+                response = self.get(operands[key])
+            elif operands[command] == "show":
+                response = str(self.data)
+            else:
+                pass
+
+        return response
+
+    # all servers write to log, only leader maintains the state machine!
+    def write_to_log(self, string_operation, term_absent, path_to_logs=''):
+        print("Writing to log: " + string_operation)
+
+        if len(string_operation) == 0:
+            return ''
+
+        operands = string_operation.split(" ")
+        if term_absent:
+            command, key, values = 0, 1, 2
+        else:
+            index, term, command, key, values = 0, 1, 2, 3, 4
+
+        if operands[command] in ["set", "delete"]:
+            if term_absent:
+                self.highest_index = self.highest_index + 1
+                string_operation = str(self.highest_index) + " " + str(self.latest_term) + " " + string_operation
+            else:
+                self.highest_index = index + 1
+                self.latest_term = term
+
+            if path_to_logs == '':
+                path_to_logs = "logs/" + self.server_name + "_log.txt"
+            f = open(path_to_logs, "a+")
+            f.write(string_operation + '\n')
             f.close()
 
-            for command in log.split('\n'):
-                self.execute(command)
-        
+            return string_operation
+
+        return ''

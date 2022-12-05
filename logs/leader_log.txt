@@ -1,0 +1,11 @@
+0 0 set  unreachable
+1 0 set a 1
+2 0 set b 2
+3 0 set c 3
+4 0 set d 4
+5 0 set roni me
+6 0 set me happy
+7 0 set lulli 1234
+8 0 set test 1234
+9 0 set me me
+10 0 set you you
