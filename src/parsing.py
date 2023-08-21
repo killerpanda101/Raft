@@ -1,6 +1,6 @@
 import ast
 
-from src.config import server_nodes, destination_addresses
+from src.config import destination_addresses, server_nodes
 
 
 def return_address_and_message(string_request):

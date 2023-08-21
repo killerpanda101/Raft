@@ -1,16 +1,4 @@
 0 0 set  unreachable
-1 0 set a 1
-2 0 set b 2
-3 0 set c 3
-4 0 delete c
-5 0 delete a
-6 0 set pari 123
-7 0 delete pari
-8 0 set hi hi
-9 0 set me me
-10 0 set hello hi
-11 0 delete hello
-12 0 set hummm humm
-13 0 delete hummm
-14 0 set rrr rrr
-15 0 delete rrr
+1 0 set lulli tu
+2 0 set muth mar
+3 0 set parijat chutiya

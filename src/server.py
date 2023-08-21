@@ -1,19 +1,18 @@
+import ast
 from socket import *
 import threading
 import time
 
-from src.message_passing import *
 
-from src.key_value_store import KeyValueStore
-from src.parsing import address_of, with_return_address, broadcast, return_address_and_message
 from src.append_entries_call import AppendEntriesCall
-
-from src.config import other_server_names, server_nodes, destination_addresses
-import ast
+from src.config import other_server_names
+from src.key_value_store import KeyValueStore
+from src.message_passing import receive_message, send_message
+from src.parsing import with_return_address, broadcast, return_address_and_message, address_of
 
 
 class Server:
-    def __init__(self, name, port=10000, leader=False):
+    def __init__(self, name, ip, port=10000, leader=False):
         self.port = port
         self.name = name
         self.key_value_store = KeyValueStore(server_name=name)
@@ -23,11 +22,11 @@ class Server:
         self.followers_with_update_status = {}
         self.current_operation = ''
         self.current_operation_committed = False
+        self.ip = ip
 
         for server_name in other_server_names(name):
             self.followers_with_update_status[server_name] = False
 
-    # Send messages to friend!
     def send(self, message, to_server_address):
         print(f"connecting to {to_server_address[0]} port {to_server_address[1]}")
 
@@ -39,21 +38,22 @@ class Server:
             try:
                 print(f"sending {encoded_message} to {to_server_address}")
                 send_message(peer_socket, encoded_message)
-                time.sleep(0.5)
-                peer_socket.close()
+                time.sleep(1)
+                peer_socket.close() # do we want to close (maybe)?
             except Exception as e:
                 print(f"closing socket due to {str(e)}")
         except OSError as e:
             print("Bad file descriptor: " + str(e))
         except ConnectionRefusedError as e:
-            print(f"Ope, looks like {to_server_address[0]} port {to_server_address[1]} isn't up right now")
+            print(f"Oops, looks like {to_server_address[0]} port {to_server_address[1]} isn't up right now")
 
     # setting up a listening socket!
     def start(self):
-        server_address = ('localhost', self.port)
+        server_address = (self.ip, self.port)
 
         print("starting up on " + str(server_address[0]) + " port " + str(server_address[1]))
-
+        
+        # socket config
         self.server_socket = socket(AF_INET, SOCK_STREAM)
         self.server_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self.server_socket.bind(server_address)
@@ -79,15 +79,16 @@ class Server:
                     entries=[]
                 ).to_message()
             ))
-            threading.Timer(5.0, self.prove_aliveness).start()
+            threading.Timer(10.0, self.prove_aliveness).start()
 
-    # this function is key it checks to see if quorum is reached or not!
+    # this function is key, it checks to see if quorum is reached or not!
+    # runs every time a follwer responds with append entries successfull.
     def mark_updated(self, server_name):
         self.followers_with_update_status[server_name] = True
 
         trues = len(list(filter(lambda x: x is True, self.followers_with_update_status.values())))
         falses = len(list(filter(lambda x: x is False, self.followers_with_update_status.values())))
-        if trues >= falses:
+        if trues > falses:
             print("Committing entry: " + self.current_operation)
             self.current_operation_committed = True
             self.key_value_store.write_to_state_machine(self.current_operation, term_absent=True)
@@ -97,17 +98,21 @@ class Server:
             for server_name in other_server_names(self.name):
                 self.followers_with_update_status[server_name] = False
 
+    # once the socket connection is established
     def manage_messaging(self, connection, kvs):
         try:
             while True:
+                # get the data
                 operation = receive_message(connection)
 
+                # perform the opp
                 if operation:
                     destination, response = self.respond(kvs, operation)
 
                     if response == '':
                         break
 
+                    # send the data back
                     if destination == "client":
                         send_message(connection, response.encode('utf-8'))
                     else:
@@ -129,7 +134,7 @@ class Server:
 
         # follower workflow if the request is intended for the follower!
         if string_operation.split(" ")[0] == "append_entries":
-            # followers do this to update their logs.
+
             call = AppendEntriesCall.from_message(string_operation)
 
             if self.key_value_store.command_at(
@@ -145,7 +150,7 @@ class Server:
                 response = "append_entries_unsuccessful. Please send log prior to: " + str(
                     call.previous_index) + " " + str(call.previous_term)
 
-        # send one older entry!
+        # send one older entry! (follower catchup)
         elif string_operation.split(" ")[0] == "append_entries_unsuccessful.":
 
             response_components = string_operation.split(" ")
@@ -180,7 +185,6 @@ class Server:
 
         # branch that commits follower entries once quorum is reached!
         elif string_operation.split(" ")[0] == "commit_entries":
-            # followers do this to update their logs.
             stringified_logs_to_append = string_operation.replace("commit_entries ", "")
             print("Preparing to commit: " + stringified_logs_to_append)
             logs_to_append = ast.literal_eval(stringified_logs_to_append)
@@ -201,18 +205,18 @@ class Server:
             if self.leader:
                 self.mark_updated(server_name)
             send_pending = False
+
+        # Interactions between the leader and client 
         else:
             if self.leader:
                 self.current_operation = string_operation
 
                 if self.current_operation.split(" ")[0] in ["set", "delete"]:
                     key_value_store.write_to_log(string_operation, term_absent=True)
-                    # all client requests are broadcasted!
                     broadcast(self, with_return_address(
                         self,
                         AppendEntriesCall(
                             previous_index=self.key_value_store.highest_index - 1,
-                            # because we incremented it to update our own logs
                             previous_term=self.key_value_store.latest_term,
                             entries=[self.current_operation]
                         ).to_message()
@@ -220,14 +224,14 @@ class Server:
 
                     # waiting till we get quorum!
                     while not self.current_operation_committed:
-                        pass
+                        self.current_operation_committed = False
 
-                    response = "Aye aye, cap'n!"
+                    response = "Success!"
 
                 else:
                     response = key_value_store.read(self.current_operation)
             else:
-                response = "I am not the leader. Please leave me alone!"
+                response = "I am not the leader!"
 
         if send_pending:
             response = with_return_address(self, response)

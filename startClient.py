@@ -2,4 +2,4 @@ import sys
 
 from src.client import Client
 
-Client(server_port=int(sys.argv[1])).start()
+Client(ip=str(sys.argv[1]), server_port=int(sys.argv[2])).start()

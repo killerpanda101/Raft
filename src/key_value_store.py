@@ -9,53 +9,62 @@ class KeyValueStore:
 
     def __init__(self, server_name):
         self.server_name = server_name
-        self.data = {} # This is the state machine, not maintained for not leaders??
+        self.data = {}
         self.log = []
         self.catch_up_successful = False
-        self.latest_term = 0   # need to be updated (this is base case)
-        self.highest_index = 1
+        self.latest_term = 0  # need to be updated (this is base case)
+        self.highest_index = 0
 
+    # the three operations that the key value store supports
     def get(self, key):
-        return self.data[key]
+        if key in self.data.keys():
+            return self.data[key]
+        else:
+            return "Key Does Not Exist!"
 
     def set(self, key, value):
         self.data[key] = value
 
     def delete(self, key):
-        del self.data[key]
+        if key in self.data.keys():
+            del self.data[key]
 
     # bring the key value store upto spec!
     def catch_up(self, path_to_logs=''):
-        # why am i doing all this dude??
         if path_to_logs == '':
             path_to_logs = "logs/" + self.server_name + "_log.txt"
 
         if os.path.exists(path_to_logs):
-            f = open(path_to_logs, "r+")
+            with open(path_to_logs, "r+") as f:
+                all_lines = f.read().splitlines()
+                non_empty_lines = list(filter(lambda x: x != '', all_lines))
 
-            # if log completely empty set base case
-            all_lines = f.read().splitlines()
-            non_empty_lines = list(filter(lambda x: x != '', all_lines))
-            if len(non_empty_lines) == 0:
+                # Ensure the first line is "0 0 set  unreachable" (base log)
+                if len(non_empty_lines) == 0 or non_empty_lines[0] != "0 0 set  unreachable":
+                    f.seek(0)
+                    f.write("0 0 set  unreachable\n")
+                    f.write('\n'.join(all_lines) + '\n')
+
+                # Read the updated lines
                 f.seek(0)
-                f.write("0 0 set  unreachable\n")
-            f.close()
+                all_lines = f.read().splitlines()
 
-            last_command = ''
-            for command in all_lines:
-                if command != '':
-                    last_command = command
-                    self.write_to_state_machine(command, term_absent=False)
+                last_command = ''
+                for command in all_lines:
+                    if command != '':
+                        last_command = command
+                        self.write_to_state_machine(command, term_absent=False)
 
-            if last_command != '':
-                components = last_command.split(' ')
+                if last_command != '':
+                    components = last_command.split(' ')
 
-                # increment the index from the last call
-                # so that the next log entry continues the count upward
-                self.highest_index = int(components[0])
-                self.latest_term = int(components[1])
+                    # increment the index from the last call
+                    # so that the next log entry continues the count upward
+                    self.highest_index = int(components[0])
+                    self.latest_term = int(components[1])
 
-        self.catch_up_successful = True
+            self.catch_up_successful = True
+
 
     def remove_logs_after_index(self, index, path_to_logs=''):
         if path_to_logs == '':
@@ -74,8 +83,8 @@ class KeyValueStore:
             f.close()
 
     def log_access_object(self, path_to_logs=''):
-        as_dict = {}
-        the_worst_array = []
+        dict_for_state_machine = {}
+        array_for_index_terms = []
         if path_to_logs == '':
             path_to_logs = "logs/" + self.server_name + "_log.txt"
 
@@ -88,10 +97,10 @@ class KeyValueStore:
                 if command != '':
                     operands = command.split(" ")
 
-                    as_dict[" ".join(operands[:2])] = " ".join(operands)
-                    the_worst_array.append(" ".join(operands[:2]))
+                    dict_for_state_machine[" ".join(operands[:2])] = " ".join(operands)
+                    array_for_index_terms.append(" ".join(operands[:2]))
 
-        return LogDataAccessObject(array=the_worst_array, dict=as_dict)
+        return LogDataAccessObject(array=array_for_index_terms, dict=dict_for_state_machine)
 
     def command_at(self, previous_index, previous_term):
         # get the command at "index term" combo.
@@ -105,7 +114,6 @@ class KeyValueStore:
 
         return self.latest_term
 
-    # client operations that modify state (SET/DELETE)
     def write_to_state_machine(self, string_operation, term_absent, path_to_logs=''):
         print("Writing to state machine: " + string_operation)
 
@@ -145,16 +153,19 @@ class KeyValueStore:
         if len(string_operation) == 0:
             return
 
+        # get the client request to see what it wants
         operands = string_operation.split(" ")
         print("the read command is " + string_operation)
         command, key, values = 0, 1, 2
 
+        # in case of invalid client command 
         response = "Sorry, I don't understand that command."
 
         # this is the client reads
         with self.client_lock:
             if operands[command] == "get":
                 response = self.get(operands[key])
+            # show returns everyting, use this to debug    
             elif operands[command] == "show":
                 response = str(self.data)
             else:
@@ -162,7 +173,6 @@ class KeyValueStore:
 
         return response
 
-    # all servers write to log, only leader maintains the state machine!
     def write_to_log(self, string_operation, term_absent, path_to_logs=''):
         print("Writing to log: " + string_operation)
 
@@ -170,13 +180,14 @@ class KeyValueStore:
             return ''
 
         operands = string_operation.split(" ")
-        if term_absent:
+
+        if term_absent or len(operands) in (2, 3):
             command, key, values = 0, 1, 2
         else:
             index, term, command, key, values = 0, 1, 2, 3, 4
 
         if operands[command] in ["set", "delete"]:
-            if term_absent:
+            if term_absent or len(operands) in (2, 3):
                 self.highest_index = self.highest_index + 1
                 string_operation = str(self.highest_index) + " " + str(self.latest_term) + " " + string_operation
             else:
