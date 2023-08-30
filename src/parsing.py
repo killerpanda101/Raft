@@ -1,5 +1,3 @@
-import ast
-
 from src.config import destination_addresses, server_nodes
 
 

@@ -1,6 +1,5 @@
 import os
 import threading
-from enum import Enum
 
 from src.log_data_access_object import LogDataAccessObject
 
