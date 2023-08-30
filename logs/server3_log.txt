@@ -1,4 +1,6 @@
 0 0 set  unreachable
-1 0 set lulli tu
-2 0 set muth mar
-3 0 set parijat chutiya
+2 7 set 777 bond
+3 7 set parijat 1
+3 7 set parijat 1
+4 7 set 7
+5 7 set 7 10

@@ -27,9 +27,17 @@ class Client:
                 data = receive_message(self.sock)
                 print(f"received {data}")
 
-            except:
+            except Exception as e:
+                print(e)
                 # always close the socket to ensure that other 
                 # clients can connect to this port later.
                 print(f"closing socket")
                 self.sock.close()
                 running = False
+
+
+
+
+
+
+

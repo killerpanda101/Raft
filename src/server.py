@@ -2,9 +2,11 @@ import ast
 from socket import *
 import threading
 import time
+import random
 
 
 from src.append_entries_call import AppendEntriesCall
+from src.request_vote_call import RequestVoteCall
 from src.config import other_server_names
 from src.key_value_store import KeyValueStore
 from src.message_passing import receive_message, send_message
@@ -17,15 +19,47 @@ class Server:
         self.name = name
         self.key_value_store = KeyValueStore(server_name=name)
         self.key_value_store.catch_up()
-        self.term = self.key_value_store.get_latest_term()
+        self.latest_leader = "yet unelected"
+
         self.leader = leader
+        self.heartbeat_timer = None
         self.followers_with_update_status = {}
         self.current_operation = ''
         self.current_operation_committed = False
         self.ip = ip
 
+        self.timeout = float(random.randint(10, 18))
+        self.election_countdown = threading.Timer(self.timeout, self.start_election)
+        print("Server started with timeout of : " + str(self.timeout))
+        self.election_countdown.start()
+        self.voted_for_me = {}
+
         for server_name in other_server_names(name):
             self.followers_with_update_status[server_name] = False
+
+        for server_name in other_server_names(name):
+            self.voted_for_me[server_name] = False
+        self.voted_for_me[self.name] = False
+
+    def start_election(self):
+        if not self.leader:
+            self.key_value_store.current_term += 1
+
+            # restart election if no leader is successfully elected.
+            self.timeout = float(random.randint(10, 18))
+            self.election_countdown = threading.Timer(self.timeout, self.start_election)
+            print("Server reset election timeout to : " + str(self.timeout))
+            self.election_countdown.start()
+
+            self.voted_for_me[self.name] = True
+            broadcast(self, with_return_address(
+                self,
+                RequestVoteCall(
+                    for_term=str(self.key_value_store.current_term),
+                    latest_log_index=str(self.key_value_store.highest_index),
+                    latest_log_term=str(self.key_value_store.latest_term_in_logs)
+                ).to_message()
+                ))
 
     def send(self, message, to_server_address):
         print(f"connecting to {to_server_address[0]} port {to_server_address[1]}")
@@ -39,9 +73,10 @@ class Server:
                 print(f"sending {encoded_message} to {to_server_address}")
                 send_message(peer_socket, encoded_message)
                 time.sleep(1)
-                peer_socket.close() # do we want to close (maybe)?
+                peer_socket.close() 
             except Exception as e:
                 print(f"closing socket due to {str(e)}")
+                peer_socket.close()
         except OSError as e:
             print("Bad file descriptor: " + str(e))
         except ConnectionRefusedError as e:
@@ -74,12 +109,14 @@ class Server:
             broadcast(self, with_return_address(
                 self,
                 AppendEntriesCall(
+                    in_term=self.key_value_store.current_term,
                     previous_index=self.key_value_store.highest_index,
-                    previous_term=self.key_value_store.latest_term,
+                    previous_term=self.key_value_store.latest_term_in_logs,
                     entries=[]
                 ).to_message()
             ))
-            threading.Timer(10.0, self.prove_aliveness).start()
+            self.heartbeat_timer = threading.Timer(5.0, self.prove_aliveness)
+            self.heartbeat_timer.start()
 
     # this function is key, it checks to see if quorum is reached or not!
     # runs every time a follwer responds with append entries successfull.
@@ -88,7 +125,7 @@ class Server:
 
         trues = len(list(filter(lambda x: x is True, self.followers_with_update_status.values())))
         falses = len(list(filter(lambda x: x is False, self.followers_with_update_status.values())))
-        if trues > falses:
+        if trues >= falses:
             print("Committing entry: " + self.current_operation)
             self.current_operation_committed = True
             self.key_value_store.write_to_state_machine(self.current_operation, term_absent=True)
@@ -97,6 +134,22 @@ class Server:
             self.current_operation_committed = False
             for server_name in other_server_names(self.name):
                 self.followers_with_update_status[server_name] = False
+
+    def mark_voted(self, server_name):
+        self.voted_for_me[server_name] = True
+
+        trues = len(list(filter(lambda x: x is True, self.voted_for_me.values())))
+        falses = len(list(filter(lambda x: x is False, self.voted_for_me.values())))
+        if trues >= falses:
+            print("I win the election for term " + str(self.key_value_store.current_term) + "!")
+            self.key_value_store.catch_up(new_leader=True)
+            self.leader = True
+
+            self.prove_aliveness()
+
+            for server_name in other_server_names(self.name):
+                self.voted_for_me[server_name] = False
+            self.voted_for_me[self.name] = False
 
     # once the socket connection is established
     def manage_messaging(self, connection, kvs):
@@ -134,21 +187,37 @@ class Server:
 
         # follower workflow if the request is intended for the follower!
         if string_operation.split(" ")[0] == "append_entries":
-
             call = AppendEntriesCall.from_message(string_operation)
 
-            if self.key_value_store.command_at(
+            # term checking
+            if call.in_term < self.key_value_store.current_term:
+                response = "Your term is out of date. You can't be the leader."
+            else:
+                # The storing the last server that reached out in a leaderly fashion.
+                self.latest_leader = server_name
+                
+                # reset timer
+                self.election_countdown.cancel()
+                self.election_countdown = threading.Timer(self.timeout, self.start_election)
+                self.election_countdown.start()
+
+                self.leader = False
+                if self.heartbeat_timer:
+                    self.heartbeat_timer.cancel()
+                self.key_value_store.current_term = call.in_term
+
+                # update logs
+                if self.key_value_store.command_at(
                     call.previous_index,
                     call.previous_term
-            ) is not None:
-                key_value_store.remove_logs_after_index(call.previous_index)
-                [key_value_store.write_to_log(log, term_absent=False) for log in call.entries]
-                print("State machine after appending: " + str(key_value_store.data))
+                ) != None:
+                    key_value_store.remove_logs_after_index(call.previous_index)
+                    [key_value_store.write_to_log(log, term_absent=False) for log in call.entries]
+                    print("State machine after appending: " + str(key_value_store.data))
 
-                response = "Append entries call successful!"
-            else:
-                response = "append_entries_unsuccessful. Please send log prior to: " + str(
-                    call.previous_index) + " " + str(call.previous_term)
+                    response = "Append entries call successful!"
+                else:
+                    response = "append_entries_unsuccessful. Please send log prior to: " + str(call.previous_index) + " " + str(call.previous_term)
 
         # send one older entry! (follower catchup)
         elif string_operation.split(" ")[0] == "append_entries_unsuccessful.":
@@ -178,6 +247,7 @@ class Server:
             try_this_term = new_key_to_try.split(" ")[1]
 
             response = AppendEntriesCall(
+                in_term=self.key_value_store.current_term,
                 previous_index=try_this_index,
                 previous_term=try_this_term,
                 entries=new_values_to_send
@@ -199,8 +269,26 @@ class Server:
             "Sorry, I don't understand that command.",
             "Broadcasting to other servers to catch up their logs.",
             "Commit entries call successful!",
-        ]:
+            "Sorry, already voted.",
+            "Your term is out of date. You can't be the leader.",
+            "Your log is out of date. I'm not voting for you!"
+        ] or string_operation.startswith("I am not the leader"):
             send_pending = False
+
+        elif string_operation.split(" ")[0] == "can_I_count_on_your_vote_in_term":
+            request_vote_call = RequestVoteCall.from_message(string_operation)
+            if request_vote_call.for_term > self.key_value_store.current_term \
+                and request_vote_call.latest_log_term >= self.key_value_store.latest_term_in_logs \
+                and request_vote_call.latest_log_index >= self.key_value_store.highest_index:
+                    response = "You can count on my vote!"
+            else:
+                response = "Your log is out of date. I'm not voting for you!"
+
+        elif string_operation == "You can count on my vote!":
+            self.mark_voted(server_name)
+            self.key_value_store.current_term += 1
+            send_pending = False
+
         elif string_operation == "Append entries call successful!":
             if self.leader:
                 self.mark_updated(server_name)
@@ -212,26 +300,29 @@ class Server:
                 self.current_operation = string_operation
 
                 if self.current_operation.split(" ")[0] in ["set", "delete"]:
-                    key_value_store.write_to_log(string_operation, term_absent=True)
+                    string_operation_with_term = key_value_store.write_to_log(string_operation, term_absent=True)
                     broadcast(self, with_return_address(
                         self,
                         AppendEntriesCall(
+                            in_term=self.key_value_store.current_term,
                             previous_index=self.key_value_store.highest_index - 1,
-                            previous_term=self.key_value_store.latest_term,
-                            entries=[self.current_operation]
+                            previous_term=self.key_value_store.latest_term_in_logs,
+                            entries=[string_operation_with_term]
                         ).to_message()
                     ))
 
                     # waiting till we get quorum!
+                    #TODO: Something about this block closes the connection
                     while not self.current_operation_committed:
-                        self.current_operation_committed = False
+                        pass
+                        # self.current_operation_committed = False
 
                     response = "Success!"
 
                 else:
                     response = key_value_store.read(self.current_operation)
             else:
-                response = "I am not the leader!"
+                response = "I am not the leader. The last leader I heard from is: " + str(self.latest_leader)
 
         if send_pending:
             response = with_return_address(self, response)

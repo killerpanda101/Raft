@@ -1,36 +1,40 @@
 import os
 import threading
+from enum import Enum
 
 from src.log_data_access_object import LogDataAccessObject
 
 
 class KeyValueStore:
-    client_lock = threading.Lock()
+    LOG_DIR = "logs/"
+    BASE_LOG_ENTRY = "0 0 set unreachable"
+    CLIENT_LOCK = threading.Lock()
 
     def __init__(self, server_name):
         self.server_name = server_name
         self.data = {}
         self.log = []
         self.catch_up_successful = False
-        self.latest_term = 0  # need to be updated (this is base case)
-        self.highest_index = 0
+        self.current_term = 0
+        self.latest_term_in_logs = 0 
+        self.highest_index = 1
+        self.log_recently_changed = False
+
+    def _get_log_path(self):
+        return f"{self.LOG_DIR}{self.server_name}_log.txt"
 
     # the three operations that the key value store supports
     def get(self, key):
-        if key in self.data.keys():
-            return self.data[key]
-        else:
-            return "Key Does Not Exist!"
+        return self.data.get(key, "Key Does Not Exist!")
 
     def set(self, key, value):
         self.data[key] = value
 
     def delete(self, key):
-        if key in self.data.keys():
-            del self.data[key]
+        self.data.pop(key, None)
 
     # bring the key value store upto spec!
-    def catch_up(self, path_to_logs=''):
+    def catch_up(self, path_to_logs='', new_leader=False):
         if path_to_logs == '':
             path_to_logs = "logs/" + self.server_name + "_log.txt"
 
@@ -61,9 +65,16 @@ class KeyValueStore:
                     # increment the index from the last call
                     # so that the next log entry continues the count upward
                     self.highest_index = int(components[0])
-                    self.latest_term = int(components[1])
+                    self.latest_term_in_logs = int(components[1])
 
-            self.catch_up_successful = True
+                if not new_leader:
+                    self.current_term = self.latest_term_in_logs
+
+            print("Latest term in logs: " + str(self.latest_term_in_logs))
+            print("Current term: " + str(self.current_term))
+
+        self.catch_up_successful = True
+        self.log_recently_changed = True
 
 
     def remove_logs_after_index(self, index, path_to_logs=''):
@@ -81,26 +92,33 @@ class KeyValueStore:
                 f.write(line_to_keep)
             f.truncate()
             f.close()
+            self.log_recently_changed = True
 
     def log_access_object(self, path_to_logs=''):
-        dict_for_state_machine = {}
-        array_for_index_terms = []
-        if path_to_logs == '':
-            path_to_logs = "logs/" + self.server_name + "_log.txt"
+        if not self.log_recently_changed:
+            pass
+        else:
+            dict_for_state_machine = {}
+            array_for_index_terms = []
+            if path_to_logs == '':
+                path_to_logs = "logs/" + self.server_name + "_log.txt"
 
-        if os.path.exists(path_to_logs):
-            f = open(path_to_logs, "r")
-            log = f.read()
-            f.close()
+            if os.path.exists(path_to_logs):
+                f = open(path_to_logs, "r")
+                log = f.read()
+                f.close()
 
-            for command in log.split('\n'):
-                if command != '':
-                    operands = command.split(" ")
+                for command in log.split('\n'):
+                    if command != '':
+                        operands = command.split(" ")
 
-                    dict_for_state_machine[" ".join(operands[:2])] = " ".join(operands)
-                    array_for_index_terms.append(" ".join(operands[:2]))
+                        dict_for_state_machine[" ".join(operands[:2])] = " ".join(operands)
+                        array_for_index_terms.append(" ".join(operands[:2]))
 
-        return LogDataAccessObject(array=array_for_index_terms, dict=dict_for_state_machine)
+            self.cached_log_access_object = LogDataAccessObject(array=array_for_index_terms, dict=dict_for_state_machine)
+            self.log_recently_changed = False
+
+        return self.cached_log_access_object
 
     def command_at(self, previous_index, previous_term):
         # get the command at "index term" combo.
@@ -112,7 +130,7 @@ class KeyValueStore:
             print("This store isn't caught up, so it doesn't know what term we're in!")
             return
 
-        return self.latest_term
+        return self.latest_term_in_logs
 
     def write_to_state_machine(self, string_operation, term_absent, path_to_logs=''):
         print("Writing to state machine: " + string_operation)
@@ -121,7 +139,7 @@ class KeyValueStore:
             return
 
         if term_absent:
-            string_operation = str(self.highest_index) + " " + str(self.latest_term) + " " + string_operation
+            string_operation = str(self.highest_index) + " " + str(self.latest_term_in_logs) + " " + string_operation
 
         operands = string_operation.split(" ")
         index, term, command, key, values = 0, 1, 2, 3, 4
@@ -129,7 +147,7 @@ class KeyValueStore:
         response = "Sorry, I don't understand that command."
 
         with self.client_lock:
-            self.latest_term = int(operands[term])
+            self.latest_term_in_logs = int(operands[term])
 
             if operands[command] == "set":
                 value = " ".join(operands[values:])
@@ -175,6 +193,7 @@ class KeyValueStore:
 
     def write_to_log(self, string_operation, term_absent, path_to_logs=''):
         print("Writing to log: " + string_operation)
+        self.log_recently_changed = True
 
         if len(string_operation) == 0:
             return ''
@@ -188,17 +207,19 @@ class KeyValueStore:
 
         if operands[command] in ["set", "delete"]:
             if term_absent or len(operands) in (2, 3):
-                self.highest_index = self.highest_index + 1
-                string_operation = str(self.highest_index) + " " + str(self.latest_term) + " " + string_operation
+                self.highest_index += 1
+                string_operation = str(self.highest_index) + " " + str(self.current_term) + " " + string_operation
             else:
                 self.highest_index = index + 1
-                self.latest_term = term
+                self.latest_term_in_logs = term
 
             if path_to_logs == '':
                 path_to_logs = "logs/" + self.server_name + "_log.txt"
             f = open(path_to_logs, "a+")
             f.write(string_operation + '\n')
             f.close()
+
+            self.latest_term_in_logs = self.current_term
 
             return string_operation
 
