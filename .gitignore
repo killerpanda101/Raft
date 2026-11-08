@@ -149,3 +149,4 @@ Thumbs.db
 .ipynb_checkpoints/
 models/*.pt
 *.ckpt
+logs/
