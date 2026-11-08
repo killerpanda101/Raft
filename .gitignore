@@ -131,3 +131,21 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+# Secrets / local config
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.*
+credentials.json
+# OS / editor
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+# Python
+.venv/
+.ipynb_checkpoints/
+models/*.pt
+*.ckpt
